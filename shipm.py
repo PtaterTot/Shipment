@@ -8,6 +8,7 @@ import zipfile
 import shutil
 import requests
 
+SHIPM_UPDATE_URL = "https://raw.githubusercontent.com/PtaterTot/Shipment/refs/heads/main/shipm.py"
 
 def self_update():
     print("Checking for updates...")
