@@ -10,6 +10,7 @@ import requests
 
 SHIPM_UPDATE_URL = "https://raw.githubusercontent.com/PtaterTot/Shipment/refs/heads/main/shipm.py"
 
+
 def self_update():
     print("Checking for updates...")
 
@@ -199,6 +200,10 @@ def install_file(path, system, distro):
 # Main CLI
 # ========================
 def main():
+    if command == "update":
+    self_update()
+    return
+
     if len(sys.argv) < 3:
         print("Usage: shipm <install|deps> <package>")
         return
