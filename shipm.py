@@ -1,246 +1,235 @@
 #!/usr/bin/env python3
 import os
 import sys
+import json
 import platform
 import subprocess
 import tarfile
 import zipfile
 import shutil
 import requests
+from pathlib import Path
 
-SHIPM_UPDATE_URL = "https://raw.githubusercontent.com/PtaterTot/Shipment/refs/heads/main/shipm.py"
+# ============================
+# CONFIGURATION
+# ============================
 
+REPO_JSON_URL = "https://raw.githubusercontent.com/YourUser/Shipment/main/packages.json"
+
+CACHE_DIR = Path.home() / ".shipm" / "cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+LOCAL_JSON = Path.home() / ".shipm" / "packages.json"
+
+UPDATE_URL = "https://raw.githubusercontent.com/YourUser/Shipment/main/shipm.py"
+
+# ============================
+# JSON Repo Loader + Caching
+# ============================
+
+def load_packages():
+    """Load package index from GitHub with local cache fallback."""
+    try:
+        print("Fetching package index...")
+        r = requests.get(REPO_JSON_URL, timeout=5)
+
+        if r.status_code == 200:
+            LOCAL_JSON.write_text(r.text, encoding="utf-8")
+            print("Package index updated.")
+        else:
+            print("Failed to update package index, using cached file...")
+
+    except:
+        print("Network error, using cached package index...")
+
+    if LOCAL_JSON.exists():
+        return json.loads(LOCAL_JSON.read_text(encoding="utf-8"))
+
+    print("ERROR: No package index available.")
+    return {}
+
+# ============================
+# Self Update
+# ============================
 
 def self_update():
     print("Checking for updates...")
-
     try:
-        r = requests.get(SHIPM_UPDATE_URL)
-        if r.status_code != 200:
-            print("Failed to fetch latest shipm.py")
-            return
-
-        new_code = r.text
-
-        current_path = os.path.realpath(sys.argv[0])
-
-        # On Windows with .bat wrapper
-        if current_path.endswith(".bat"):
-            # Replace shipm.py next to it
-            current_path = os.path.join(os.path.dirname(current_path), "shipm.py")
-
-        print(f"Updating {current_path} ...")
-
-        # Write new version
-        with open(current_path, "w", encoding="utf-8") as f:
-            f.write(new_code)
-
-        print("Update complete!")
-
-        # Make it executable on Unix
-        if platform.system().lower() != "windows":
-            os.chmod(current_path, 0o755)
-
+        new = requests.get(UPDATE_URL).text
+        current = os.path.realpath(sys.argv[0])
+        with open(current, "w", encoding="utf-8") as f:
+            f.write(new)
+        os.chmod(current, 0o755)
+        print("Updated successfully!")
     except Exception as e:
         print("Update failed:", e)
 
+# ============================
+# System Detection
+# ============================
 
-# ========================
-# CONFIG: Your GitHub repos + dependencies
-# ========================
-PACKAGES = {
-    "fastfetch": {
-        "repo": "fastfetch-cli/fastfetch",
-        "deps": {
-            "debian": ["curl", "libc6"],
-            "arch": ["curl"],
-            "fedora": ["curl"],
-            "windows": []
-        }
-    },
-
-    "nvim": {
-        "repo": "neovim/neovim",
-        "deps": {
-            "debian": ["python3"],
-            "arch": ["python"],
-            "fedora": ["python3"],
-            "windows": []
-        }
-    }
-}
-
-# ========================
-# Detect OS + Distro
-# ========================
 def detect_system():
     system = platform.system().lower()
 
     if system == "linux":
         if os.path.exists("/etc/debian_version"):
-            distro = "debian"
-        elif os.path.exists("/etc/arch-release"):
-            distro = "arch"
-        elif os.path.exists("/etc/fedora-release"):
-            distro = "fedora"
-        else:
-            distro = "unknown"
-    elif system == "windows":
-        distro = "windows"
-    else:
-        distro = "unknown"
+            return "linux", "debian"
+        if os.path.exists("/etc/arch-release"):
+            return "linux", "arch"
+        if os.path.exists("/etc/fedora-release"):
+            return "linux", "fedora"
+        return "linux", "unknown"
 
-    return system, distro
+    if system == "windows":
+        return "windows", "windows"
 
-# ========================
-# Install dependencies
-# ========================
-def install_dependencies(pkg_info, distro):
-    deps = pkg_info["deps"].get(distro, [])
-    if not deps:
+    return system, "unknown"
+
+# ============================
+# Dependencies
+# ============================
+
+def install_dependencies(deps, distro):
+    if distro not in deps:
+        print("No dependencies for this distro.")
+        return
+
+    need = deps[distro]
+    if not need:
         print("No dependencies needed.")
         return
 
-    print(f"Installing dependencies: {' '.join(deps)}")
+    print("Installing dependencies:", " ".join(need))
 
     if distro == "debian":
         subprocess.run(["sudo", "apt", "update"])
-        subprocess.run(["sudo", "apt", "install", "-y"] + deps)
+        subprocess.run(["sudo", "apt", "install", "-y"] + need)
 
     elif distro == "arch":
-        subprocess.run(["sudo", "pacman", "-Sy", "--needed"] + deps)
+        subprocess.run(["sudo", "pacman", "-Sy", "--needed"] + need)
 
     elif distro == "fedora":
-        subprocess.run(["sudo", "dnf", "install", "-y"] + deps)
+        subprocess.run(["sudo", "dnf", "install", "-y"] + need)
 
-    elif distro == "windows":
-        print("Windows: please install dependencies manually (or extend me!)")
+# ============================
+# Release Download w/ Cache
+# ============================
 
-    else:
-        print("Unknown distro, skipping dependency install.")
+def download_latest(repo, match, force=False):
+    """Download only the asset matching the user’s distro."""
+    api = f"https://api.github.com/repos/{repo}/releases/latest"
 
-# ========================
-# Download GitHub Release
-# ========================
-def download_latest(repo, output_dir="downloads"):
-    api_url = f"https://api.github.com/repos/{repo}/releases/latest"
-    r = requests.get(api_url)
-
+    r = requests.get(api)
     if r.status_code != 200:
-        print(f"Error: Could not fetch release for {repo}")
+        print("Failed to fetch release.")
         return None
 
-    release = r.json()
-    assets = release.get("assets", [])
-    if not assets:
-        print("No assets found in latest release.")
-        return None
+    assets = r.json().get("assets", [])
 
-    os.makedirs(output_dir, exist_ok=True)
-
-    downloaded_files = []
-
+    # Pick asset that matches substring (e.g., ".deb")
     for asset in assets:
-        url = asset["browser_download_url"]
-        filename = asset["name"]
-        path = os.path.join(output_dir, filename)
+        if match in asset["name"]:
+            url = asset["browser_download_url"]
+            filename = asset["name"]
+            local_path = CACHE_DIR / filename
 
-        print(f"Downloading {filename}")
+            # Cached?
+            if local_path.exists() and not force:
+                print(f"Using cached file: {local_path}")
+                return local_path
 
-        with requests.get(url, stream=True) as f:
-            f.raise_for_status()
-            with open(path, "wb") as out:
-                for chunk in f.iter_content(chunk_size=8192):
-                    if chunk:
+            print(f"Downloading {filename}...")
+            with requests.get(url, stream=True) as f:
+                f.raise_for_status()
+                with open(local_path, "wb") as out:
+                    for chunk in f.iter_content(8192):
                         out.write(chunk)
 
-        print(f"Saved to {path}")
-        downloaded_files.append(path)
+            print(f"Saved to cache: {local_path}")
+            return local_path
 
-    return downloaded_files
+    print("No matching asset found.")
+    return None
 
-# =============================
-# Install extracted packages
-# =============================
+# ============================
+# Install extracted data
+# ============================
+
 def install_file(path, system, distro):
-    print(f"Installing {os.path.basename(path)} ...")
+    path = str(path)
+    print(f"Installing {path} ...")
 
-    # ---- .deb ----
-    if path.endswith(".deb") and system == "linux":
-        if distro == "debian":
-            subprocess.run(["sudo", "apt", "install", "-y", path])
-        else:
-            print("Warning: .deb on non-Debian systems may not work.")
-            subprocess.run(["sudo", "dpkg", "-i", path])
+    if path.endswith(".deb"):
+        subprocess.run(["sudo", "apt", "install", "-y", path])
 
-    # ---- .rpm ----
-    elif path.endswith(".rpm") and system == "linux":
+    elif path.endswith(".rpm"):
         subprocess.run(["sudo", "rpm", "-i", path])
 
-    # ---- .zip ----
     elif path.endswith(".zip"):
-        extract_dir = path + "_extracted"
-        os.makedirs(extract_dir, exist_ok=True)
-        with zipfile.ZipFile(path, 'r') as zip_ref:
-            zip_ref.extractall(extract_dir)
-        print(f"Extracted to: {extract_dir}")
+        dest = path + "_extracted"
+        with zipfile.ZipFile(path) as z:
+            z.extractall(dest)
+        print("Extracted to", dest)
 
-    # ---- tar.* ----
-    elif path.endswith(".tar.gz") or path.endswith(".tgz") or path.endswith(".tar.xz") or path.endswith(".tar"):
-        extract_dir = path + "_extracted"
-        os.makedirs(extract_dir, exist_ok=True)
-        with tarfile.open(path, "r:*") as tar_ref:
-            tar_ref.extractall(extract_dir)
-        print(f"Extracted to: {extract_dir}")
+    elif any(path.endswith(x) for x in [".tar.gz", ".tgz", ".tar.xz"]):
+        dest = path + "_extracted"
+        with tarfile.open(path, "r:*") as t:
+            t.extractall(dest)
+        print("Extracted to", dest)
 
-    else:
-        print(f"Unknown file type: {path}")
-
-# ========================
+# ============================
 # Main CLI
-# ========================
-def main():
-    if command == "update":
-    self_update()
-    return
+# ============================
 
-    if len(sys.argv) < 3:
-        print("Usage: shipm <install|deps> <package>")
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: shipm <install|deps|update> <package>")
         return
 
     command = sys.argv[1]
-    pkg = sys.argv[2]
 
-    if pkg not in PACKAGES:
-        print(f"Unknown package '{pkg}'")
-        print("Available:", ", ".join(PACKAGES.keys()))
+    if command == "update":
+        self_update()
         return
 
-    pkg_info = PACKAGES[pkg]
-    repo = pkg_info["repo"]
+    packages = load_packages()
+
+    if command == "help":
+        print("Available packages:", ", ".join(packages.keys()))
+        return
+
+    if len(sys.argv) < 3:
+        print("Missing package name.")
+        return
+
+    pkg = sys.argv[2]
+
+    if pkg not in packages:
+        print("Unknown package:", pkg)
+        return
+
+    pkg_info = packages[pkg]
 
     system, distro = detect_system()
     print(f"System: {system}, Distro: {distro}")
 
-    # ---- deps command ----
+    # deps
     if command == "deps":
-        install_dependencies(pkg_info, distro)
+        install_dependencies(pkg_info["deps"], distro)
         return
 
-    # ---- install command ----
+    # install
     if command == "install":
-        install_dependencies(pkg_info, distro)
+        install_dependencies(pkg_info["deps"], distro)
 
-        files = download_latest(repo)
-        if not files:
-            return
-
-        for f in files:
+        # match correct file type
+        match = pkg_info["assets"].get(distro, "")
+        f = download_latest(pkg_info["repo"], match)
+        if f:
             install_file(f, system, distro)
+        return
 
-    else:
-        print(f"Unknown command '{command}'")
-
+    print("Unknown command:", command)
 
 if __name__ == "__main__":
     main()
