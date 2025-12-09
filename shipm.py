@@ -21,7 +21,7 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 LOCAL_JSON = Path.home() / ".shipm" / "packages.json"
 
-UPDATE_URL = "https://raw.githubusercontent.com/YourUser/Shipment/main/shipm.py"
+UPDATE_URL = "https://raw.githubusercontent.com/PtaterTot/Shipment/refs/heads/main/shipm.py"
 
 # ============================
 # JSON Repo Loader + Caching
