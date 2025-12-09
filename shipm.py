@@ -14,7 +14,7 @@ from pathlib import Path
 # CONFIGURATION
 # ============================
 
-REPO_JSON_URL = "https://raw.githubusercontent.com/YourUser/Shipment/main/packages.json"
+REPO_JSON_URL = "https://raw.githubusercontent.com/PtaterTot/Shipment-Packages/refs/heads/main/packages.json"
 
 CACHE_DIR = Path.home() / ".shipm" / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
